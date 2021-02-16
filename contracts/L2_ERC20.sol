@@ -58,6 +58,7 @@ contract L2_ERC20 is ERC20, L2_Bridge {
      * @return `true` if the function succeeds.
      */
     function withdraw(
+        uint256 _to,
         uint256 _amount
     )
         public
@@ -78,7 +79,7 @@ contract L2_ERC20 is ERC20, L2_Bridge {
             // Encode the function parameters to be sent to our partner contract.
             abi.encodeWithSignature(
                 "withdraw(address,uint256)",
-                msg.sender,
+                _to,
                 _amount
             ),
             // Give it a bunch of gas for now.
