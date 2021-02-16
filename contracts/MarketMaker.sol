@@ -96,7 +96,7 @@ contract MarketMaker is XChainRegistry {
     // TODO: Can the withdrawal message be augmented to include fee information?
     function isSuccessfulMsg(ERC20Like token, address to, uint256 amount, uint256 messageNonce) public view returns (bool) {
         // Checks that `l1DepositBoxes[token].withdraw(to, amount, { from: l2Mirror[token] })` has been relayed.
-        bytes memory call = abi.encodePacked(L2ERC20.withdraw.selector, to, amount);
+        bytes memory call = abi.encodeWithSelector(L2ERC20.withdraw.selector, to, amount);
         bytes memory message = abi.encodeWithSignature(
             "relayMessage(address,address,bytes,uint256)",
             l1DepositBoxes[address(token)],
