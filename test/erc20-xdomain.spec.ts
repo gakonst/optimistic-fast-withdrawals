@@ -1,7 +1,7 @@
 import { expect } from './setup'
 
 import hre, { ethers } from 'hardhat'
-import { Contract, Signer } from 'ethers'
+import { constants, Contract, Signer } from 'ethers'
 
 describe('Layer 1 <> Layer 2 ERC20 Transfers', () => {
   const l2ethers = (hre as any).l2ethers
@@ -103,4 +103,142 @@ describe('Layer 1 <> Layer 2 ERC20 Transfers', () => {
       )
     ).to.equal(0)
   })
+
+  describe('fast withdrawals', async () => {
+    const amount = 2500000
+
+    let withdrawalTx: any
+
+    let marketMaker: Contract
+    let mmAccount: Signer
+    let inventoryAcc: Signer
+
+    before(async () => {
+      const signers = await ethers.getSigners()
+      inventoryAcc = signers[6]
+      mmAccount = signers[5]
+    })
+
+    beforeEach(async () => {
+      // 1. deploy the MM
+      marketMaker = await (await ethers.getContractFactory('MarketMaker'))
+      .connect(mmAccount)
+      .deploy(l2ethers.contracts.L1CrossDomainMessenger.address)
+
+      // 2. fund the inventory address and approve the MM for it
+      await L1_ERC20.connect(l1account1).transfer(await inventoryAcc.getAddress(), 2 * amount)
+      await L1_ERC20.connect(inventoryAcc).approve(marketMaker.address, constants.MaxUint256)
+
+      // 3. register the contracts
+      await marketMaker.connect(mmAccount).registerDepositBox(
+        L1_ERC20.address,
+        L1_ERC20Adapter.address,
+      )
+      await marketMaker.connect(mmAccount).registerDepositBox(
+        L1_ERC20.address,
+        L2_ERC20.address,
+      )
+
+      // make a test deposit and start the withdrawal
+      await L1_ERC20.connect(l1account1).approve(
+        L1_ERC20Adapter.address,
+        amount
+      )
+      const receipt1 = await L1_ERC20Adapter.connect(l1account1).deposit(
+        amount
+      )
+      await l2ethers.waitForBridgeRelay(receipt1)
+
+      // save the withdrawal receipt
+      withdrawalTx = await L2_ERC20.connect(l2account1).withdraw(
+        marketMaker.address,
+        amount
+      )
+    })
+
+    // TODO: Add data decoding helpers for the SentMessage event from the L2 bridge.
+
+    it("market maker greenlights, user gets paid, mm claims a week later", async () => {
+      const beneficiary = await l1account1.getAddress()
+
+      let balBefore = await L1_ERC20.balanceOf(beneficiary)
+      let balBeforeMM = await L1_ERC20.balanceOf(marketMaker.address)
+      await marketMaker.connect(mmAccount).greenlight(
+        L1_ERC20.address,
+        await inventoryAcc.getAddress(),
+        beneficiary,
+        amount,
+      )
+      let balAfter = await L1_ERC20.balanceOf(beneficiary)
+      let balAfterMM = await L1_ERC20.balanceOf(marketMaker.address)
+      // beneficiary + amount
+      expect(balAfter.sub(balBefore)).to.be.eq(amount)
+      // mm - amount
+      expect(balBeforeMM.sub(balAfterMM)).to.be.eq(amount)
+
+      // receipt gets relayed
+      balBefore = await L1_ERC20.balanceOf(marketMaker.address)
+      await l2ethers.waitForBridgeRelay(withdrawalTx)
+      balAfter = await L1_ERC20.balanceOf(marketMaker.address)
+      // mm + amount
+      expect(balAfter.sub(balBefore)).to.be.eq(amount)
+
+      // market maker claim by the user fails because it's greenlit
+      const nonce = 0 // TODO: How do we get this nonce? From the emitted event on L2?
+      await expect(marketMaker.connect(l1account1).claim(
+        L1_ERC20.address,
+        beneficiary,
+        amount,
+        nonce,
+      )).to.be.revertedWith("message already greenlighted")
+
+      // market maker claim by owner success
+      const owner = await mmAccount.getAddress()
+      balBeforeMM = await L1_ERC20.balanceOf(marketMaker.address)
+      balBefore = await L1_ERC20.balanceOf(owner)
+      await marketMaker.connect(mmAccount).claim(
+        L1_ERC20.address,
+        owner,
+        amount,
+        nonce,
+      )
+      balAfter = await L1_ERC20.balanceOf(owner)
+      balAfterMM = await L1_ERC20.balanceOf(marketMaker.address)
+      // owner + amount
+      expect(balAfter.sub(balBefore)).to.be.eq(amount)
+      // mm - amount
+      expect(balBeforeMM.sub(balAfterMM)).to.be.eq(amount)
+    })
+
+    // it("market maker AFK, user gets paid a week later", async () => {
+    //   // receipt gets relayed
+    //   await l2ethers.waitForBridgeRelay(withdrawalTx)
+
+    //   // market maker contract balance increased
+    //   await L1_ERC20.balanceOf(marketMaker.address)
+
+    //   // makret maker claim by user success
+    //   await marketMaker.claims(...)
+
+    //   // market maker claim by owner failure because it's already claimed
+    //   await marketMaker.claims(...)
+    // })
+
+    // it("market maker greenlights after the tx is relayed (same as 1)", async () => {
+    //   // receipt gets relayed
+    //   await l2ethers.waitForBridgeRelay(withdrawalTx)
+
+    //   await marketMaker.greenlight()
+    //   expect(user balance to be increased)
+
+    //   // market maker contract balance increased
+    //   await L1_ERC20.balanceOf(marketMaker.address)
+
+    //   // market maker claim by the user fails because it's greenlit
+    //   await marketMaker.claims(...)
+
+    //   // makret maker claim by owner success
+    //   await marketMaker.claims(...)
+
+    // })
 })
